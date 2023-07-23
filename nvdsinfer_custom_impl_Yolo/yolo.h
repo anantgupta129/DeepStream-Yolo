@@ -26,50 +26,69 @@
 #ifndef _YOLO_H_
 #define _YOLO_H_
 
+#include "NvInferPlugin.h"
+#include "nvdsinfer_custom_impl.h"
+
 #include "layers/convolutional_layer.h"
+#include "layers/deconvolutional_layer.h"
 #include "layers/batchnorm_layer.h"
 #include "layers/implicit_layer.h"
 #include "layers/channels_layer.h"
 #include "layers/shortcut_layer.h"
+#include "layers/sam_layer.h"
 #include "layers/route_layer.h"
 #include "layers/upsample_layer.h"
 #include "layers/pooling_layer.h"
 #include "layers/reorg_layer.h"
-#include "layers/reduce_layer.h"
-#include "layers/shuffle_layer.h"
-#include "layers/softmax_layer.h"
-#include "layers/cls_layer.h"
-#include "layers/reg_layer.h"
 
-#include "nvdsinfer_custom_impl.h"
+#if NV_TENSORRT_MAJOR >= 8
+#define INT int32_t
+#else
+#define INT int
+#endif
+
+#if NV_TENSORRT_MAJOR < 8 || (NV_TENSORRT_MAJOR == 8 && NV_TENSORRT_MINOR == 0)
+static class Logger : public nvinfer1::ILogger {
+  void log(nvinfer1::ILogger::Severity severity, const char* msg) noexcept override {
+    if (severity <= nvinfer1::ILogger::Severity::kWARNING)
+      std::cout << msg << std::endl;
+  }
+} logger;
+#endif
 
 struct NetworkInfo
 {
-    std::string inputBlobName;
-    std::string networkType;
-    std::string configFilePath;
-    std::string wtsFilePath;
-    std::string int8CalibPath;
-    std::string deviceType;
-    uint numDetectedClasses;
-    int clusterMode;
-    float scoreThreshold;
-    std::string networkMode;
+  std::string inputBlobName;
+  std::string networkType;
+  std::string modelName;
+  std::string onnxWtsFilePath;
+  std::string darknetWtsFilePath;
+  std::string darknetCfgFilePath;
+  uint batchSize;
+  int implicitBatch;
+  std::string int8CalibPath;
+  std::string deviceType;
+  uint numDetectedClasses;
+  int clusterMode;
+  std::string networkMode;
+  float scaleFactor;
+  const float* offsets;
+  uint workspaceSize;
 };
 
 struct TensorInfo
 {
-    std::string blobName;
-    uint gridSizeX {0};
-    uint gridSizeY {0};
-    uint numBBoxes {0};
-    float scaleXY;
-    std::vector<float> anchors;
-    std::vector<int> mask;
+  std::string blobName;
+  uint gridSizeX {0};
+  uint gridSizeY {0};
+  uint numBBoxes {0};
+  float scaleXY;
+  std::vector<float> anchors;
+  std::vector<int> mask;
 };
 
 class Yolo : public IModelParser {
-public:
+  public:
     Yolo(const NetworkInfo& networkInfo);
 
     ~Yolo() override;
@@ -77,28 +96,39 @@ public:
     bool hasFullDimsSupported() const override { return false; }
 
     const char* getModelName() const override {
-        return m_ConfigFilePath.empty() ? m_NetworkType.c_str() : m_ConfigFilePath.c_str();
+      return m_NetworkType == "onnx" ? m_OnnxWtsFilePath.substr(0, m_OnnxWtsFilePath.find(".onnx")).c_str() :
+          m_DarknetCfgFilePath.substr(0, m_DarknetCfgFilePath.find(".cfg")).c_str();
     }
 
     NvDsInferStatus parseModel(nvinfer1::INetworkDefinition& network) override;
 
-    nvinfer1::ICudaEngine *createEngine (nvinfer1::IBuilder* builder, nvinfer1::IBuilderConfig* config);
+#if NV_TENSORRT_MAJOR >= 8
+    nvinfer1::ICudaEngine* createEngine(nvinfer1::IBuilder* builder, nvinfer1::IBuilderConfig* config);
+#else
+    nvinfer1::ICudaEngine* createEngine(nvinfer1::IBuilder* builder);
+#endif
 
-protected:
+  protected:
     const std::string m_InputBlobName;
     const std::string m_NetworkType;
-    const std::string m_ConfigFilePath;
-    const std::string m_WtsFilePath;
+    const std::string m_ModelName;
+    const std::string m_OnnxWtsFilePath;
+    const std::string m_DarknetWtsFilePath;
+    const std::string m_DarknetCfgFilePath;
+    const uint m_BatchSize;
+    const int m_ImplicitBatch;
     const std::string m_Int8CalibPath;
     const std::string m_DeviceType;
     const uint m_NumDetectedClasses;
     const int m_ClusterMode;
     const std::string m_NetworkMode;
-    const float m_ScoreThreshold;
+    const float m_ScaleFactor;
+    const float* m_Offsets;
+    const uint m_WorkspaceSize;
 
+    uint m_InputC;
     uint m_InputH;
     uint m_InputW;
-    uint m_InputC;
     uint64_t m_InputSize;
     uint m_NumClasses;
     uint m_LetterBox;
@@ -109,7 +139,7 @@ protected:
     std::vector<std::map<std::string, std::string>> m_ConfigBlocks;
     std::vector<nvinfer1::Weights> m_TrtWeights;
 
-private:
+  private:
     NvDsInferStatus buildYoloNetwork(std::vector<float>& weights, nvinfer1::INetworkDefinition& network);
 
     std::vector<std::map<std::string, std::string>> parseConfigFile(const std::string cfgFilePath);
